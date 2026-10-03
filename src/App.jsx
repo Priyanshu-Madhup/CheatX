@@ -9,6 +9,7 @@ import Sidebar from "./components/Sidebar.jsx";
 import ItemCard from "./components/ItemCard.jsx";
 import ManualSheet from "./components/ManualSheet.jsx";
 import VoiceSheet from "./components/VoiceSheet.jsx";
+import { CameraIcon, MicIcon, TypeIcon, UploadIcon } from "./components/Icons.jsx";
 
 const STAGES = {
   reading: "Reading the question",
@@ -254,17 +255,17 @@ function Workspace({ session }) {
         </div>
 
         <footer className="dock">
-          <button className="btn primary" disabled={busy} onClick={() => cameraRef.current.click()}>
-            Photo
+          <button className="btn primary" disabled={busy} aria-label="Take photo" title="Take photo" onClick={() => cameraRef.current.click()}>
+            <CameraIcon />
           </button>
-          <button className="btn" disabled={busy} onClick={() => uploadRef.current.click()}>
-            Upload
+          <button className="btn" disabled={busy} aria-label="Upload image" title="Upload image" onClick={() => uploadRef.current.click()}>
+            <UploadIcon />
           </button>
-          <button className="btn" disabled={busy} onClick={() => setSheet("manual")}>
-            Type
+          <button className="btn" disabled={busy} aria-label="Type a question" title="Type a question" onClick={() => setSheet("manual")}>
+            <TypeIcon />
           </button>
-          <button className="btn" disabled={busy} onClick={startVoice}>
-            Voice
+          <button className="btn" disabled={busy} aria-label="Voice" title="Voice" onClick={startVoice}>
+            <MicIcon />
           </button>
         </footer>
 
