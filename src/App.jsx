@@ -2,23 +2,27 @@ import { useEffect, useRef, useState } from "react";
 import { supabase, supabaseConfigured } from "./lib/supabase.js";
 import { addItem, createTest, deleteTest, listItems, listTests } from "./lib/db.js";
 import { fileToDataUrl } from "./lib/image.js";
-import { extractQuestion, structureSpoken, transcribeAudio } from "./lib/groq.js";
+import { extractProblem, extractQuestion, solveCode, structureSpoken, transcribeAudio } from "./lib/groq.js";
 import { pickAnswer } from "./lib/wity.js";
 import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import ItemCard from "./components/ItemCard.jsx";
-import ManualSheet from "./components/ManualSheet.jsx";
-import VoiceSheet from "./components/VoiceSheet.jsx";
-import { CameraIcon, MicIcon, TypeIcon, UploadIcon } from "./components/Icons.jsx";
+import CodeCard from "./components/CodeCard.jsx";
+import AddSheet from "./components/AddSheet.jsx";
+import { PlusIcon } from "./components/Icons.jsx";
 
 const STAGES = {
   reading: "Reading the question",
   transcribing: "Transcribing",
   structuring: "Structuring the question",
   deciding: "Scoring the options",
+  solving: "Writing the solution",
   saving: "Saving",
 };
-const titleOf = (q) => (q.length > 48 ? q.slice(0, 45).trim() + "..." : q);
+const titleOf = (q) => {
+  const t = q.replace(/\s+/g, " ").trim();
+  return t.length > 48 ? t.slice(0, 45).trim() + "..." : t;
+};
 
 export default function App() {
   if (!supabaseConfigured) {
@@ -48,9 +52,6 @@ function Gate() {
 }
 
 function Workspace({ session }) {
-  const cameraRef = useRef(null);
-  const uploadRef = useRef(null);
-  const audioRef = useRef(null);
   const endRef = useRef(null);
   const activeRef = useRef(null);
 
@@ -58,7 +59,7 @@ function Workspace({ session }) {
   const [activeId, setActiveId] = useState(null);
   const [items, setItems] = useState([]);
   const [pending, setPending] = useState(null); // { image, stage, question?, error? }
-  const [sheet, setSheet] = useState(null); // "manual" | "voice" | null
+  const [adding, setAdding] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
   const [loadError, setLoadError] = useState("");
 
@@ -106,68 +107,83 @@ function Workspace({ session }) {
     }
   }
 
-  // Shared pipeline: produce a structured question -> Wity -> save to the active test.
-  async function run(image, firstStage, produce) {
+  // Saves an item into the active test, creating the test (titled from the question) on first use.
+  async function persist(payload) {
+    let testId = activeRef.current;
+    if (!testId) {
+      const t = await createTest(titleOf(payload.code?.title || payload.question));
+      setTests((prev) => [t, ...prev]);
+      testId = t.id;
+      setActive(testId);
+    }
+    const saved = await addItem(testId, payload);
+    setItems((prev) => [...prev, saved]);
+    setPending(null);
+  }
+
+  // MCQ pipeline: produce a structured question -> Wity -> save.
+  async function runMcq(image, firstStage, produce) {
     setLoadError("");
-    setSheet(null);
+    setAdding(false);
     try {
       setPending({ image, stage: firstStage });
       const q = await produce((stage) => setPending({ image, stage }));
       setPending({ image, stage: "deciding", question: q.question });
       const r = await pickAnswer(q);
       setPending({ image, stage: "saving", question: q.question });
-
-      let testId = activeRef.current;
-      if (!testId) {
-        const t = await createTest(titleOf(q.question));
-        setTests((prev) => [t, ...prev]);
-        testId = t.id;
-        setActive(testId);
-      }
-      const saved = await addItem(testId, {
+      await persist({
+        kind: "mcq",
         question: q.question,
         context: q.context,
         options: q.options,
         choice: r.choice,
         probabilities: r.probabilities,
       });
-      setItems((prev) => [...prev, saved]);
-      setPending(null);
     } catch (err) {
       setPending({ image, stage: null, error: err.message || "Something went wrong." });
     }
   }
 
-  async function handleFile(e) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
+  async function handleMcq(job) {
+    if (job.kind === "manual") return runMcq(null, "deciding", async () => job.q);
+    if (job.kind === "voice") {
+      return runMcq(null, "transcribing", async (setStage) => {
+        const text = await transcribeAudio(job.blob, job.filename);
+        setStage("structuring");
+        return structureSpoken(text);
+      });
+    }
     let image;
     try {
-      image = await fileToDataUrl(file);
+      image = await fileToDataUrl(job.file);
     } catch (err) {
+      setAdding(false);
       return setPending({ image: null, stage: null, error: err.message });
     }
-    run(image, "reading", () => extractQuestion(image));
+    runMcq(image, "reading", () => extractQuestion(image));
   }
 
-  const runSpeech = (blob, filename) =>
-    run(null, "transcribing", async (setStage) => {
-      const text = await transcribeAudio(blob, filename);
-      setStage("structuring");
-      return structureSpoken(text);
-    });
-
-  function handleAudioFile(e) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (file) runSpeech(file, file.name || "speech.m4a");
-  }
-
-  // Microphone capture needs HTTPS; on plain http (LAN dev) fall back to the phone recorder.
-  function startVoice() {
-    if (window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder) setSheet("voice");
-    else audioRef.current.click();
+  // Coding pipeline: images / speech / text -> problem statement -> solution with sample output -> save.
+  async function handleCode({ images = [], text = "", voice, language = "Auto" }) {
+    setLoadError("");
+    setAdding(false);
+    const image = images[0] || null;
+    try {
+      let problem = text;
+      if (voice) {
+        setPending({ image, stage: "transcribing" });
+        problem = await transcribeAudio(voice.blob, voice.filename);
+      } else if (images.length) {
+        setPending({ image, stage: "reading" });
+        problem = await extractProblem(images);
+      }
+      setPending({ image, stage: "solving", question: problem });
+      const solution = await solveCode(problem, language);
+      setPending({ image, stage: "saving", question: problem });
+      await persist({ kind: "code", question: problem, code: solution });
+    } catch (err) {
+      setPending({ image, stage: null, error: err.message || "Something went wrong." });
+    }
   }
 
   const busy = Boolean(pending?.stage);
@@ -198,10 +214,6 @@ function Workspace({ session }) {
           </button>
         </header>
 
-        <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={handleFile} />
-        <input ref={uploadRef} type="file" accept="image/*" hidden onChange={handleFile} />
-        <input ref={audioRef} type="file" accept="audio/*" capture hidden onChange={handleAudioFile} />
-
         <div className="scroll">
           {empty && (
             <section className="hero">
@@ -210,7 +222,10 @@ function Workspace({ session }) {
                 <br />
                 Get the answer.
               </h1>
-              <p>Photograph, type or speak a multiple choice question and see the correct option with how sure we are.</p>
+              <p>
+                Add a multiple choice question to see the correct option and how sure we are, or a coding question to get
+                a solution with its output.
+              </p>
             </section>
           )}
 
@@ -221,9 +236,7 @@ function Workspace({ session }) {
           )}
 
           <div className="feed">
-            {items.map((it) => (
-              <ItemCard key={it.id} item={it} />
-            ))}
+            {items.map((it) => (it.kind === "code" ? <CodeCard key={it.id} item={it} /> : <ItemCard key={it.id} item={it} />))}
 
             {pending && (
               <div className="item">
@@ -233,7 +246,7 @@ function Workspace({ session }) {
                     {busy && <div className="scan" />}
                   </div>
                 )}
-                {pending.question && <p className="question">{pending.question}</p>}
+                {pending.question && <p className="question clamp">{pending.question}</p>}
                 {busy && (
                   <div className="status">
                     <span className="dot" />
@@ -255,24 +268,13 @@ function Workspace({ session }) {
         </div>
 
         <footer className="dock">
-          <button className="btn primary" disabled={busy} aria-label="Take photo" title="Take photo" onClick={() => cameraRef.current.click()}>
-            <CameraIcon />
-          </button>
-          <button className="btn" disabled={busy} aria-label="Upload image" title="Upload image" onClick={() => uploadRef.current.click()}>
-            <UploadIcon />
-          </button>
-          <button className="btn" disabled={busy} aria-label="Type a question" title="Type a question" onClick={() => setSheet("manual")}>
-            <TypeIcon />
-          </button>
-          <button className="btn" disabled={busy} aria-label="Voice" title="Voice" onClick={startVoice}>
-            <MicIcon />
+          <button className="btn primary add" disabled={busy} onClick={() => setAdding(true)}>
+            <PlusIcon />
+            Add question
           </button>
         </footer>
 
-        {sheet === "manual" && (
-          <ManualSheet onClose={() => setSheet(null)} onSubmit={(q) => run(null, "deciding", async () => q)} />
-        )}
-        {sheet === "voice" && <VoiceSheet onClose={() => setSheet(null)} onDone={runSpeech} />}
+        {adding && <AddSheet onClose={() => setAdding(false)} onMcq={handleMcq} onCode={handleCode} />}
       </main>
     </div>
   );

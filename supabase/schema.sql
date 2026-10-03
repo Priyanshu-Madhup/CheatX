@@ -19,6 +19,13 @@ create table if not exists public.items (
   created_at timestamptz not null default now()
 );
 
+-- Coding questions (idempotent migration for existing databases)
+alter table public.items add column if not exists kind text not null default 'mcq';
+alter table public.items add column if not exists code jsonb;  -- { title, language, explanation, code, input, output }
+alter table public.items alter column options drop not null;
+alter table public.items alter column choice drop not null;
+alter table public.items alter column probabilities drop not null;
+
 create index if not exists tests_user_created_idx on public.tests (user_id, created_at desc);
 create index if not exists items_test_created_idx on public.items (test_id, created_at);
 

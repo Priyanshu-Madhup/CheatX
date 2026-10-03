@@ -33,6 +33,30 @@ export const TypeIcon = () => (
   </svg>
 );
 
+export const PlusIcon = () => (
+  <svg {...base}>
+    <path d="M12 5v14" />
+    <path d="M5 12h14" />
+  </svg>
+);
+
+export const ListIcon = () => (
+  <svg {...base}>
+    <path d="m4.5 7 1.5 1.5L8.5 5.5" />
+    <path d="m4.5 16 1.5 1.5 2.5-3" />
+    <path d="M12 7h7.5" />
+    <path d="M12 16.5h7.5" />
+  </svg>
+);
+
+export const CodeIcon = () => (
+  <svg {...base}>
+    <path d="m8.5 8-4 4 4 4" />
+    <path d="m15.5 8 4 4-4 4" />
+    <path d="m13.2 5.5-2.4 13" />
+  </svg>
+);
+
 export const MicIcon = () => (
   <svg {...base}>
     <rect x="9" y="3.5" width="6" height="11" rx="3" />

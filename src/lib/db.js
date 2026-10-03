@@ -16,10 +16,10 @@ export const deleteTest = (id) => supabase.from("tests").delete().eq("id", id).t
 export const listItems = (testId) =>
   supabase.from("items").select("*").eq("test_id", testId).order("created_at", { ascending: true }).then(unwrap);
 
-export const addItem = (testId, { question, context, options, choice, probabilities }) =>
+export const addItem = (testId, { kind = "mcq", question, context = "", options = null, choice = null, probabilities = null, code = null }) =>
   supabase
     .from("items")
-    .insert({ test_id: testId, question, context, options, choice, probabilities })
+    .insert({ test_id: testId, kind, question, context, options, choice, probabilities, code })
     .select("*")
     .single()
     .then(unwrap);
