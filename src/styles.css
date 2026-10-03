@@ -129,3 +129,37 @@ button:disabled { opacity: .45; cursor: default; }
 @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes pulse { 50% { opacity: .25; } }
 @keyframes scan { 0%, 100% { top: 4%; } 50% { top: 96%; } }
+
+/* Dock with four actions */
+.dock { grid-template-columns: 1.15fr 1fr 1fr 1fr; gap: 8px; }
+.dock .btn { font-size: 14px; padding: 0 4px; }
+
+/* Bottom sheets */
+.sheet-wrap { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center; }
+.sheet-wrap .scrim { z-index: 0; }
+.sheet {
+  position: relative; z-index: 1; width: 100%; max-width: 560px; max-height: 92dvh; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--line); border-bottom: 0; border-radius: 24px 24px 0 0;
+  padding: 18px 20px calc(env(safe-area-inset-bottom) + 20px); display: grid; gap: 14px; animation: rise .28s ease;
+}
+.sheet-head { display: flex; justify-content: space-between; align-items: center; }
+.sheet-head .label { margin: 0; }
+.field {
+  width: 100%; border-radius: 14px; border: 1px solid var(--line); background: var(--bg);
+  padding: 13px 14px; font-size: 16px; outline: none; resize: none; line-height: 1.45;
+}
+.field:focus { border-color: var(--muted); }
+.opt-list { display: grid; gap: 10px; }
+.opt-input { display: flex; align-items: center; gap: 10px; }
+.opt-badge { flex: none; width: 30px; height: 30px; border-radius: 9px; background: var(--line); color: var(--muted); display: grid; place-items: center; font-size: 13px; font-weight: 600; }
+.sheet-foot { display: flex; justify-content: space-between; align-items: center; }
+.hint { color: var(--muted); font-size: 13px; }
+.hint.bad { color: var(--bad); }
+.hint.center { text-align: center; margin: 0; }
+.sheet.voice { text-align: center; }
+.pulse { width: 84px; height: 84px; border-radius: 50%; margin: 10px auto 0; background: var(--line); }
+.pulse.on { background: var(--accent); animation: ring 1.4s ease-out infinite; }
+.timer { font-size: 30px; font-weight: 500; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+
+@keyframes rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes ring { 0% { box-shadow: 0 0 0 0 rgba(232, 227, 213, .45); } 100% { box-shadow: 0 0 0 28px rgba(232, 227, 213, 0); } }

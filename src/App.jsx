@@ -2,13 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { supabase, supabaseConfigured } from "./lib/supabase.js";
 import { addItem, createTest, deleteTest, listItems, listTests } from "./lib/db.js";
 import { fileToDataUrl } from "./lib/image.js";
-import { extractQuestion } from "./lib/groq.js";
+import { extractQuestion, structureSpoken, transcribeAudio } from "./lib/groq.js";
 import { pickAnswer } from "./lib/wity.js";
 import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import ItemCard from "./components/ItemCard.jsx";
+import ManualSheet from "./components/ManualSheet.jsx";
+import VoiceSheet from "./components/VoiceSheet.jsx";
 
-const STAGES = { reading: "Reading the question", deciding: "Scoring the options", saving: "Saving" };
+const STAGES = {
+  reading: "Reading the question",
+  transcribing: "Transcribing",
+  structuring: "Structuring the question",
+  deciding: "Scoring the options",
+  saving: "Saving",
+};
 const titleOf = (q) => (q.length > 48 ? q.slice(0, 45).trim() + "..." : q);
 
 export default function App() {
@@ -41,6 +49,7 @@ function Gate() {
 function Workspace({ session }) {
   const cameraRef = useRef(null);
   const uploadRef = useRef(null);
+  const audioRef = useRef(null);
   const endRef = useRef(null);
   const activeRef = useRef(null);
 
@@ -48,6 +57,7 @@ function Workspace({ session }) {
   const [activeId, setActiveId] = useState(null);
   const [items, setItems] = useState([]);
   const [pending, setPending] = useState(null); // { image, stage, question?, error? }
+  const [sheet, setSheet] = useState(null); // "manual" | "voice" | null
   const [sideOpen, setSideOpen] = useState(false);
   const [loadError, setLoadError] = useState("");
 
@@ -95,16 +105,13 @@ function Workspace({ session }) {
     }
   }
 
-  async function handleFile(e) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
+  // Shared pipeline: produce a structured question -> Wity -> save to the active test.
+  async function run(image, firstStage, produce) {
     setLoadError("");
-    let image = null;
+    setSheet(null);
     try {
-      image = await fileToDataUrl(file);
-      setPending({ image, stage: "reading" });
-      const q = await extractQuestion(image);
+      setPending({ image, stage: firstStage });
+      const q = await produce((stage) => setPending({ image, stage }));
       setPending({ image, stage: "deciding", question: q.question });
       const r = await pickAnswer(q);
       setPending({ image, stage: "saving", question: q.question });
@@ -128,6 +135,38 @@ function Workspace({ session }) {
     } catch (err) {
       setPending({ image, stage: null, error: err.message || "Something went wrong." });
     }
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    let image;
+    try {
+      image = await fileToDataUrl(file);
+    } catch (err) {
+      return setPending({ image: null, stage: null, error: err.message });
+    }
+    run(image, "reading", () => extractQuestion(image));
+  }
+
+  const runSpeech = (blob, filename) =>
+    run(null, "transcribing", async (setStage) => {
+      const text = await transcribeAudio(blob, filename);
+      setStage("structuring");
+      return structureSpoken(text);
+    });
+
+  function handleAudioFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) runSpeech(file, file.name || "speech.m4a");
+  }
+
+  // Microphone capture needs HTTPS; on plain http (LAN dev) fall back to the phone recorder.
+  function startVoice() {
+    if (window.isSecureContext && navigator.mediaDevices?.getUserMedia && window.MediaRecorder) setSheet("voice");
+    else audioRef.current.click();
   }
 
   const busy = Boolean(pending?.stage);
@@ -160,6 +199,7 @@ function Workspace({ session }) {
 
         <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={handleFile} />
         <input ref={uploadRef} type="file" accept="image/*" hidden onChange={handleFile} />
+        <input ref={audioRef} type="file" accept="audio/*" capture hidden onChange={handleAudioFile} />
 
         <div className="scroll">
           {empty && (
@@ -169,11 +209,15 @@ function Workspace({ session }) {
                 <br />
                 Get the answer.
               </h1>
-              <p>Photograph or upload a multiple choice question and see the correct option with how sure we are.</p>
+              <p>Photograph, type or speak a multiple choice question and see the correct option with how sure we are.</p>
             </section>
           )}
 
-          {loadError && <div className="card error"><p>{loadError}</p></div>}
+          {loadError && (
+            <div className="card error">
+              <p>{loadError}</p>
+            </div>
+          )}
 
           <div className="feed">
             {items.map((it) => (
@@ -182,10 +226,13 @@ function Workspace({ session }) {
 
             {pending && (
               <div className="item">
-                <div className="shot">
-                  {pending.image && <img src={pending.image} alt="Captured question" />}
-                  {busy && <div className="scan" />}
-                </div>
+                {pending.image && (
+                  <div className="shot">
+                    <img src={pending.image} alt="Captured question" />
+                    {busy && <div className="scan" />}
+                  </div>
+                )}
+                {pending.question && <p className="question">{pending.question}</p>}
                 {busy && (
                   <div className="status">
                     <span className="dot" />
@@ -208,12 +255,23 @@ function Workspace({ session }) {
 
         <footer className="dock">
           <button className="btn primary" disabled={busy} onClick={() => cameraRef.current.click()}>
-            Take photo
+            Photo
           </button>
           <button className="btn" disabled={busy} onClick={() => uploadRef.current.click()}>
             Upload
           </button>
+          <button className="btn" disabled={busy} onClick={() => setSheet("manual")}>
+            Type
+          </button>
+          <button className="btn" disabled={busy} onClick={startVoice}>
+            Voice
+          </button>
         </footer>
+
+        {sheet === "manual" && (
+          <ManualSheet onClose={() => setSheet(null)} onSubmit={(q) => run(null, "deciding", async () => q)} />
+        )}
+        {sheet === "voice" && <VoiceSheet onClose={() => setSheet(null)} onDone={runSpeech} />}
       </main>
     </div>
   );
