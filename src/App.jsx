@@ -1,162 +1,220 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { supabase, supabaseConfigured } from "./lib/supabase.js";
+import { addItem, createTest, deleteTest, listItems, listTests } from "./lib/db.js";
 import { fileToDataUrl } from "./lib/image.js";
 import { extractQuestion } from "./lib/groq.js";
 import { pickAnswer } from "./lib/wity.js";
+import Auth from "./components/Auth.jsx";
+import Sidebar from "./components/Sidebar.jsx";
+import ItemCard from "./components/ItemCard.jsx";
 
-const STAGES = { reading: "Reading the question", deciding: "Scoring the options" };
+const STAGES = { reading: "Reading the question", deciding: "Scoring the options", saving: "Saving" };
+const titleOf = (q) => (q.length > 48 ? q.slice(0, 45).trim() + "..." : q);
 
 export default function App() {
+  if (!supabaseConfigured) {
+    return (
+      <main className="auth">
+        <span className="brand">CheatX</span>
+        <h1>Supabase is not configured.</h1>
+        <p className="sub">Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment.</p>
+      </main>
+    );
+  }
+  return <Gate />;
+}
+
+function Gate() {
+  const [session, setSession] = useState(undefined);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  if (session === undefined) return <main className="auth" />;
+  if (!session) return <Auth />;
+  return <Workspace session={session} />;
+}
+
+function Workspace({ session }) {
   const cameraRef = useRef(null);
   const uploadRef = useRef(null);
-  const [image, setImage] = useState(null);
-  const [stage, setStage] = useState(null);
-  const [extracted, setExtracted] = useState(null);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState("");
+  const endRef = useRef(null);
+  const activeRef = useRef(null);
 
-  const reset = () => {
-    setImage(null);
-    setStage(null);
-    setExtracted(null);
-    setResult(null);
-    setError("");
+  const [tests, setTests] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [items, setItems] = useState([]);
+  const [pending, setPending] = useState(null); // { image, stage, question?, error? }
+  const [sideOpen, setSideOpen] = useState(false);
+  const [loadError, setLoadError] = useState("");
+
+  const setActive = (id) => {
+    activeRef.current = id;
+    setActiveId(id);
   };
+
+  useEffect(() => {
+    listTests().then(setTests).catch((e) => setLoadError(e.message));
+  }, []);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [items.length, pending?.stage]);
+
+  async function selectTest(id) {
+    setSideOpen(false);
+    setPending(null);
+    setActive(id);
+    setItems([]);
+    try {
+      const rows = await listItems(id);
+      if (activeRef.current === id) setItems(rows);
+    } catch (e) {
+      setLoadError(e.message);
+    }
+  }
+
+  function newTest() {
+    setSideOpen(false);
+    setPending(null);
+    setActive(null);
+    setItems([]);
+    setLoadError("");
+  }
+
+  async function removeTest(id) {
+    try {
+      await deleteTest(id);
+      setTests((t) => t.filter((x) => x.id !== id));
+      if (activeRef.current === id) newTest();
+    } catch (e) {
+      setLoadError(e.message);
+    }
+  }
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    reset();
+    setLoadError("");
+    let image = null;
     try {
-      const dataUrl = await fileToDataUrl(file);
-      setImage(dataUrl);
-      setStage("reading");
-      const q = await extractQuestion(dataUrl);
-      setExtracted(q);
-      setStage("deciding");
+      image = await fileToDataUrl(file);
+      setPending({ image, stage: "reading" });
+      const q = await extractQuestion(image);
+      setPending({ image, stage: "deciding", question: q.question });
       const r = await pickAnswer(q);
-      setResult(r);
-      setStage(null);
+      setPending({ image, stage: "saving", question: q.question });
+
+      let testId = activeRef.current;
+      if (!testId) {
+        const t = await createTest(titleOf(q.question));
+        setTests((prev) => [t, ...prev]);
+        testId = t.id;
+        setActive(testId);
+      }
+      const saved = await addItem(testId, {
+        question: q.question,
+        context: q.context,
+        options: q.options,
+        choice: r.choice,
+        probabilities: r.probabilities,
+      });
+      setItems((prev) => [...prev, saved]);
+      setPending(null);
     } catch (err) {
-      setError(err.message || "Something went wrong.");
-      setStage(null);
+      setPending({ image, stage: null, error: err.message || "Something went wrong." });
     }
   }
 
-  const sorted = extracted
-    ? [...extracted.options].sort(
-        (a, b) => (result?.probabilities?.[b.id] ?? 0) - (result?.probabilities?.[a.id] ?? 0)
-      )
-    : [];
-  const busy = Boolean(stage);
+  const busy = Boolean(pending?.stage);
+  const empty = items.length === 0 && !pending;
 
   return (
-    <main className="app">
-      <header className="top">
-        <span className="brand">CheatX</span>
-        {image && !busy && (
-          <button className="link" onClick={reset}>
-            New
+    <div className="shell">
+      <Sidebar
+        open={sideOpen}
+        tests={tests}
+        activeId={activeId}
+        email={session.user.email}
+        onClose={() => setSideOpen(false)}
+        onNew={newTest}
+        onSelect={selectTest}
+        onDelete={removeTest}
+        onSignOut={() => supabase.auth.signOut()}
+      />
+
+      <main className="main">
+        <header className="top">
+          <button className="link menu" onClick={() => setSideOpen(true)}>
+            History
           </button>
-        )}
-      </header>
+          <span className="brand">CheatX</span>
+          <button className="link" onClick={newTest}>
+            New test
+          </button>
+        </header>
 
-      <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={handleFile} />
-      <input ref={uploadRef} type="file" accept="image/*" hidden onChange={handleFile} />
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={handleFile} />
+        <input ref={uploadRef} type="file" accept="image/*" hidden onChange={handleFile} />
 
-      {!image && (
-        <section className="hero">
-          <h1>
-            Snap a question.
-            <br />
-            Get the answer.
-          </h1>
-          <p>Photograph or upload a multiple choice question and see the correct option with how sure we are.</p>
-          <div className="actions">
-            <button className="btn primary" onClick={() => cameraRef.current.click()}>
-              Take photo
-            </button>
-            <button className="btn" onClick={() => uploadRef.current.click()}>
-              Upload image
-            </button>
-          </div>
-        </section>
-      )}
-
-      {image && (
-        <section className="stack">
-          <div className="shot">
-            <img src={image} alt="Captured question" />
-            {busy && <div className="scan" />}
-          </div>
-
-          {busy && (
-            <div className="status">
-              <span className="dot" />
-              {STAGES[stage]}
-            </div>
+        <div className="scroll">
+          {empty && (
+            <section className="hero">
+              <h1>
+                Snap a question.
+                <br />
+                Get the answer.
+              </h1>
+              <p>Photograph or upload a multiple choice question and see the correct option with how sure we are.</p>
+            </section>
           )}
 
-          {error && (
-            <div className="card error">
-              <p>{error}</p>
-              <button className="btn" onClick={reset}>
-                Try again
-              </button>
-            </div>
-          )}
+          {loadError && <div className="card error"><p>{loadError}</p></div>}
 
-          {extracted && (
-            <div className="card">
-              <div className="label">Question</div>
-              <p className="question">{extracted.question}</p>
-            </div>
-          )}
+          <div className="feed">
+            {items.map((it) => (
+              <ItemCard key={it.id} item={it} />
+            ))}
 
-          {extracted && result && (
-            <>
-              <div className="answer">
-                <div className="label">Correct answer</div>
-                <div className="answer-main">
-                  <span className="badge">{result.choice}</span>
-                  <span className="answer-text">
-                    {extracted.options.find((o) => o.id === result.choice)?.text}
-                  </span>
+            {pending && (
+              <div className="item">
+                <div className="shot">
+                  {pending.image && <img src={pending.image} alt="Captured question" />}
+                  {busy && <div className="scan" />}
                 </div>
-                <div className="conf">
-                  {Math.round((result.probabilities[result.choice] ?? 0) * 100)}% likely
-                </div>
+                {busy && (
+                  <div className="status">
+                    <span className="dot" />
+                    {STAGES[pending.stage]}
+                  </div>
+                )}
+                {pending.error && (
+                  <div className="card error">
+                    <p>{pending.error}</p>
+                    <button className="btn" onClick={() => setPending(null)}>
+                      Dismiss
+                    </button>
+                  </div>
+                )}
               </div>
+            )}
+          </div>
+          <div ref={endRef} />
+        </div>
 
-              <div className="card">
-                <div className="label">Option scores</div>
-                <ul className="options">
-                  {sorted.map((o) => {
-                    const p = result.probabilities[o.id] ?? 0;
-                    const win = o.id === result.choice;
-                    return (
-                      <li key={o.id} className={win ? "win" : ""}>
-                        <div className="row">
-                          <span className="opt-id">{o.id}</span>
-                          <span className="opt-text">{o.text}</span>
-                          <span className="opt-pct">{Math.round(p * 100)}%</span>
-                        </div>
-                        <div className="bar">
-                          <i style={{ width: `${Math.max(p * 100, 1)}%` }} />
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-
-              <button className="btn primary" onClick={() => cameraRef.current.click()}>
-                Scan another
-              </button>
-            </>
-          )}
-        </section>
-      )}
-    </main>
+        <footer className="dock">
+          <button className="btn primary" disabled={busy} onClick={() => cameraRef.current.click()}>
+            Take photo
+          </button>
+          <button className="btn" disabled={busy} onClick={() => uploadRef.current.click()}>
+            Upload
+          </button>
+        </footer>
+      </main>
+    </div>
   );
 }
