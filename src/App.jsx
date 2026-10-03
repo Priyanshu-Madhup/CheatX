@@ -189,11 +189,11 @@ function Workspace({ session }) {
 
       <main className="main">
         <header className="top">
-          <button className="link menu" onClick={() => setSideOpen(true)}>
+          <button className="pill menu" onClick={() => setSideOpen(true)}>
             History
           </button>
           <span className="brand">CheatX</span>
-          <button className="link" onClick={newTest}>
+          <button className="pill" onClick={newTest}>
             New test
           </button>
         </header>

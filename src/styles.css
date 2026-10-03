@@ -20,6 +20,12 @@ button:disabled { opacity: .45; cursor: default; }
 .brand { font-weight: 600; letter-spacing: 0.14em; font-size: 13px; text-transform: uppercase; }
 .link { background: none; border: 0; color: var(--muted); font-size: 14px; padding: 8px 0; }
 .link:hover { color: var(--text); }
+.pill {
+  height: 34px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--surface); font-size: 13px; font-weight: 500; transition: background .15s, transform .12s;
+}
+.pill:hover { background: var(--line); }
+.pill:active { transform: scale(0.97); }
 .link.center { display: block; margin: 18px auto 0; }
 .label { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
 
@@ -92,7 +98,7 @@ button:disabled { opacity: .45; cursor: default; }
   .sidebar { position: static; transform: none; flex: none; width: var(--side); }
   .scrim, .menu, .side-top .link { display: none; }
   .top { justify-content: center; }
-  .top .link:last-child { display: none; }
+  .top .pill:last-child { display: none; }
 }
 
 /* Feed */
