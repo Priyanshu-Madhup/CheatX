@@ -5,7 +5,7 @@ export async function pickAnswer({ question, context, options }) {
     criteria[o.id] = o.text;
   });
 
-  const body = {
+  const body = (reasoning) => ({
     state: { question, ...(context ? { context } : {}), options: criteria },
     questions: {
       answer: {
@@ -15,15 +15,20 @@ export async function pickAnswer({ question, context, options }) {
         criteria,
       },
     },
-    reasoning: "always",
-  };
-
-  const res = await fetch("/api/wity", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60000),
+    reasoning,
   });
+
+  const call = (reasoning) =>
+    fetch("/api/wity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body(reasoning)),
+      signal: AbortSignal.timeout(60000),
+    });
+
+  // "always" can 500 on some inputs upstream; "auto" still thinks on close calls, so fall back to it.
+  let res = await call("always");
+  if (res.status >= 500) res = await call("auto");
   if (!res.ok) throw new Error(`Decision error (${res.status}). ${await res.text()}`.slice(0, 300));
   const { answers } = await res.json();
   const a = answers.answer;
