@@ -1,3 +1,5 @@
+import { FALLBACK_MODEL, openRouterChat, parseJson } from "./openrouter.js";
+
 const KEY = import.meta.env.VITE_GROQ_API_KEY;
 const VISION_MODEL = import.meta.env.VITE_GROQ_MODEL || "qwen/qwen3.8-27b";
 const STT_MODEL = import.meta.env.VITE_GROQ_STT_MODEL || "whisper-large-v3-turbo";
@@ -43,7 +45,7 @@ function normalise(parsed, emptyMessage) {
   };
 }
 
-async function chatJson(model, messages, extra = {}) {
+async function groqCompletion(model, messages, extra) {
   requireKey();
   const res = await fetch(`${API}/chat/completions`, {
     method: "POST",
@@ -51,14 +53,24 @@ async function chatJson(model, messages, extra = {}) {
     body: JSON.stringify({ model, temperature: 0, response_format: { type: "json_object" }, messages, ...extra }),
   });
   if (!res.ok) throw await groqError(res, "Model error");
-  const data = await res.json();
-  try {
-    // Tolerate reasoning preambles: drop <think> blocks and keep the outermost JSON object.
-    const raw = data.choices[0].message.content.replace(/<think>[\s\S]*?<\/think>/g, "");
-    return JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
-  } catch {
-    throw new Error("The model returned an unreadable response.");
+  return (await res.json()).choices[0].message.content || "";
+}
+
+// Groq first; on any error (rate limit, outage, unreadable output) quietly retry on OpenRouter.
+async function chatJson(model, messages, extra = {}) {
+  const attempts = [
+    () => groqCompletion(model, messages, extra),
+    () => openRouterChat(FALLBACK_MODEL, messages, { temperature: extra.temperature ?? 0, maxTokens: extra.max_completion_tokens }),
+  ];
+  let first;
+  for (const attempt of attempts) {
+    try {
+      return parseJson(await attempt());
+    } catch (err) {
+      first = first || err;
+    }
   }
+  throw first instanceof SyntaxError ? new Error("The model returned an unreadable response.") : first;
 }
 
 const CODE_MODEL = import.meta.env.VITE_GROQ_CODE_MODEL || VISION_MODEL;
