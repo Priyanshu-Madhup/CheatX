@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { fileToDataUrl } from "../lib/image.js";
 import ManualSheet from "./ManualSheet.jsx";
 import VoiceSheet from "./VoiceSheet.jsx";
+import CropSheet from "./CropSheet.jsx";
 import { CameraIcon, CodeIcon, ListIcon, MicIcon, TypeIcon, UploadIcon } from "./Icons.jsx";
 
 const LANGS = ["Auto", "Python", "JavaScript", "Java", "C++", "C"];
@@ -27,6 +28,8 @@ export default function AddSheet({ onClose, onMcq, onCode }) {
   const [type, setType] = useState(null); // "mcq" | "code"
   const [view, setView] = useState("type"); // type | input | manual | voice | codetext | images
   const [images, setImages] = useState([]);
+  const [cropQueue, setCropQueue] = useState([]); // data URLs waiting to be cropped
+  const [cropTotal, setCropTotal] = useState(0);
   const [language, setLanguage] = useState("Auto");
   const [text, setText] = useState("");
   const [error, setError] = useState("");
@@ -38,19 +41,34 @@ export default function AddSheet({ onClose, onMcq, onCode }) {
     setView("input");
   }
 
+  // Every picked photo goes through the crop step first (kept at higher resolution so crops stay sharp).
   async function onFiles(e) {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
     setError("");
-    if (!isCode) return onMcq({ kind: "image", file: files[0] });
+    const room = isCode ? MAX_IMAGES - images.length : 1;
     try {
-      const urls = await Promise.all(files.slice(0, MAX_IMAGES).map((f) => fileToDataUrl(f)));
-      setImages((prev) => [...prev, ...urls].slice(0, MAX_IMAGES));
-      setView("images");
+      const urls = await Promise.all(files.slice(0, room).map((f) => fileToDataUrl(f, 2400, 0.9)));
+      setCropQueue(urls);
+      setCropTotal(urls.length);
+      setView("crop");
     } catch (err) {
       setError(err.message);
     }
+  }
+
+  function onCropped(url) {
+    if (!isCode) return onMcq({ kind: "image", image: url });
+    const rest = cropQueue.slice(1);
+    setImages((prev) => [...prev, url].slice(0, MAX_IMAGES));
+    setCropQueue(rest);
+    if (!rest.length) setView("images");
+  }
+
+  function cancelCrop() {
+    setCropQueue([]);
+    setView(isCode && images.length ? "images" : "input");
   }
 
   const sendVoice = (blob, filename) =>
@@ -64,6 +82,18 @@ export default function AddSheet({ onClose, onMcq, onCode }) {
 
   if (view === "manual") return <ManualSheet onClose={() => setView("input")} onSubmit={(q) => onMcq({ kind: "manual", q })} />;
   if (view === "voice") return <VoiceSheet onClose={() => setView("input")} onDone={sendVoice} />;
+  if (view === "crop" && cropQueue.length) {
+    return (
+      <CropSheet
+        key={cropQueue.length}
+        src={cropQueue[0]}
+        index={cropTotal - cropQueue.length}
+        total={cropTotal}
+        onDone={onCropped}
+        onCancel={cancelCrop}
+      />
+    );
+  }
 
   const back = view === "type" ? null : view === "input" ? () => setView("type") : () => setView("input");
   const title = view === "type" ? "Add question" : view === "input" ? (isCode ? "Coding question" : "Multiple choice") : "Coding question";

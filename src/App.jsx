@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase, supabaseConfigured } from "./lib/supabase.js";
 import { addItem, createTest, deleteTest, listItems, listTests } from "./lib/db.js";
-import { fileToDataUrl } from "./lib/image.js";
-import { extractProblem, extractQuestion, solveCode, structureSpoken, transcribeAudio } from "./lib/groq.js";
+import { extractProblems, extractQuestions, solveCode, structureSpoken, transcribeAudio } from "./lib/groq.js";
 import { pickAnswer } from "./lib/wity.js";
 import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
@@ -118,27 +117,29 @@ function Workspace({ session }) {
     }
     const saved = await addItem(testId, payload);
     setItems((prev) => [...prev, saved]);
-    setPending(null);
   }
 
-  // MCQ pipeline: produce a structured question -> Wity -> save.
+  // MCQ pipeline: produce one or more structured questions -> Wity (in parallel) -> save each in order.
   async function runMcq(image, firstStage, produce) {
     setLoadError("");
     setAdding(false);
     try {
       setPending({ image, stage: firstStage });
-      const q = await produce((stage) => setPending({ image, stage }));
-      setPending({ image, stage: "deciding", question: q.question });
-      const r = await pickAnswer(q);
-      setPending({ image, stage: "saving", question: q.question });
-      await persist({
-        kind: "mcq",
-        question: q.question,
-        context: q.context,
-        options: q.options,
-        choice: r.choice,
-        probabilities: r.probabilities,
-      });
+      const qs = [].concat(await produce((stage) => setPending({ image, stage })));
+      setPending({ image, stage: "deciding", question: qs[0].question, total: qs.length });
+      const results = await Promise.all(qs.map((q) => pickAnswer(q)));
+      setPending({ image, stage: "saving", question: qs[0].question, total: qs.length });
+      for (let i = 0; i < qs.length; i++) {
+        await persist({
+          kind: "mcq",
+          question: qs[i].question,
+          context: qs[i].context,
+          options: qs[i].options,
+          choice: results[i].choice,
+          probabilities: results[i].probabilities,
+        });
+      }
+      setPending(null);
     } catch (err) {
       setPending({ image, stage: null, error: err.message || "Something went wrong." });
     }
@@ -153,14 +154,7 @@ function Workspace({ session }) {
         return structureSpoken(text);
       });
     }
-    let image;
-    try {
-      image = await fileToDataUrl(job.file);
-    } catch (err) {
-      setAdding(false);
-      return setPending({ image: null, stage: null, error: err.message });
-    }
-    runMcq(image, "reading", () => extractQuestion(image));
+    runMcq(job.image, "reading", () => extractQuestions(job.image));
   }
 
   // Coding pipeline: images / speech / text -> problem statement -> solution with sample output -> save.
@@ -169,18 +163,22 @@ function Workspace({ session }) {
     setAdding(false);
     const image = images[0] || null;
     try {
-      let problem = text;
+      let problems = [text];
       if (voice) {
         setPending({ image, stage: "transcribing" });
-        problem = await transcribeAudio(voice.blob, voice.filename);
+        problems = [await transcribeAudio(voice.blob, voice.filename)];
       } else if (images.length) {
         setPending({ image, stage: "reading" });
-        problem = await extractProblem(images);
+        problems = await extractProblems(images);
       }
-      setPending({ image, stage: "solving", question: problem });
-      const solution = await solveCode(problem, language);
-      setPending({ image, stage: "saving", question: problem });
-      await persist({ kind: "code", question: problem, code: solution });
+      for (let i = 0; i < problems.length; i++) {
+        const info = { image, question: problems[i], total: problems.length, current: i + 1 };
+        setPending({ ...info, stage: "solving" });
+        const solution = await solveCode(problems[i], language);
+        setPending({ ...info, stage: "saving" });
+        await persist({ kind: "code", question: problems[i], code: solution });
+      }
+      setPending(null);
     } catch (err) {
       setPending({ image, stage: null, error: err.message || "Something went wrong." });
     }
@@ -251,6 +249,7 @@ function Workspace({ session }) {
                   <div className="status">
                     <span className="dot" />
                     {STAGES[pending.stage]}
+                    {pending.total > 1 && (pending.current ? ` · question ${pending.current} of ${pending.total}` : ` · ${pending.total} questions`)}
                   </div>
                 )}
                 {pending.error && (

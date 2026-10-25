@@ -10,11 +10,14 @@ const SHAPE = `{
   "options": [{ "id": "A", "text": "option text" }]
 }`;
 
-const IMAGE_PROMPT = `You read a photo of a multiple-choice question. Extract it exactly.
+const MAX_QUESTIONS = 10;
+
+const IMAGE_PROMPT = `You read a photo of one or more multiple-choice questions. Extract every distinct question that has options, in the order they appear, each exactly as written.
 Return only JSON in this shape:
-${SHAPE}
+{ "questions": [ ${SHAPE} ] }
+If several questions share a passage, figure or table, repeat what is needed in each question's "context".
 Use the option labels printed in the image as ids (A, B, C, 1, 2 ...). If unlabeled, use A, B, C in order.
-If the image has no question with options, return {"question": "", "context": "", "options": []}.`;
+Ignore questions that have no options. If the image has no question with options, return {"questions": []}.`;
 
 const SPEECH_PROMPT = `You receive a spoken transcript of someone reading out a multiple-choice question and its options.
 Clean up transcription mistakes and return only JSON in this shape:
@@ -60,20 +63,21 @@ async function chatJson(model, messages, extra = {}) {
 
 const CODE_MODEL = import.meta.env.VITE_GROQ_CODE_MODEL || VISION_MODEL;
 
-const PROBLEM_PROMPT = `These images are parts of one programming question, in order. Transcribe it exactly: the full problem statement, constraints, input and output format, examples, and any code shown.
-Return only JSON: {"problem": "the full text"}. If the images contain no programming question, return {"problem": ""}.`;
+const PROBLEM_PROMPT = `These images, in order, show one or more programming questions. If the images together show a single question (for example one that continues across images), return one entry. If they show several separate questions, return one entry per question.
+Transcribe each exactly: the full problem statement, constraints, input and output format, examples, and any code shown.
+Return only JSON: {"problems": ["full text of question 1", "..."]}. If there is no programming question, return {"problems": []}.`;
 
-// images: array of data URLs (Groq accepts up to 3 per request)
-export async function extractProblem(images) {
+// images: array of data URLs (Groq accepts up to 3 per request). Returns one problem string per question found.
+export async function extractProblems(images) {
   const parsed = await chatJson(CODE_MODEL, [
     {
       role: "user",
       content: [{ type: "text", text: PROBLEM_PROMPT }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))],
     },
   ]);
-  const problem = String(parsed.problem || "").trim();
-  if (!problem) throw new Error("No programming question found. Try clearer photos.");
-  return problem;
+  const problems = (Array.isArray(parsed.problems) ? parsed.problems : []).map((p) => String(p || "").trim()).filter(Boolean);
+  if (!problems.length) throw new Error("No programming question found. Try clearer photos.");
+  return problems.slice(0, 5);
 }
 
 export async function solveCode(problem, language = "Auto") {
@@ -102,7 +106,8 @@ Trace your code step by step on the example given in the problem (or a small exa
   };
 }
 
-export async function extractQuestion(dataUrl) {
+// Returns every multiple-choice question found in the image (at least one, else throws).
+export async function extractQuestions(dataUrl) {
   const parsed = await chatJson(VISION_MODEL, [
     {
       role: "user",
@@ -112,7 +117,16 @@ export async function extractQuestion(dataUrl) {
       ],
     },
   ]);
-  return normalise(parsed, "No question with options found. Try a clearer photo.");
+  const found = [];
+  for (const q of Array.isArray(parsed.questions) ? parsed.questions : []) {
+    try {
+      found.push(normalise(q || {}, ""));
+    } catch {
+      /* skip a question that has no usable options */
+    }
+  }
+  if (!found.length) throw new Error("No question with options found. Try a clearer photo.");
+  return found.slice(0, MAX_QUESTIONS);
 }
 
 export async function transcribeAudio(blob, filename = "speech.webm") {
